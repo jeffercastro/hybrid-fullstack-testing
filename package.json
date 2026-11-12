@@ -1,0 +1,23 @@
+{
+  "name": "hybrid-fullstack-testing",
+  "version": "1.0.0",
+  "description": "Production-grade SDET hybrid automation framework combining API data seeding, UI E2E validation with Playwright, direct SQL database assertions, and Dockerized PostgreSQL in CI/CD",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report"
+  },
+  "keywords": ["sdet", "playwright", "hybrid-testing", "api-seeding", "sql", "postgresql", "docker", "ci-cd"],
+  "author": "Jeffer Castro",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.13.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  }
+}
