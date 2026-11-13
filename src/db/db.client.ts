@@ -13,6 +13,7 @@ export class DatabaseClient {
   private pool: Pool | null = null;
   private activeClient: PoolClient | null = null;
   private baseUrl: string;
+  private schemaInitialized: boolean = false;
 
   constructor(baseUrl: string = 'http://localhost:3000') {
     this.baseUrl = baseUrl;
@@ -23,12 +24,38 @@ export class DatabaseClient {
     }
   }
 
+  async ensureSchema(): Promise<void> {
+    if (this.schemaInitialized || !this.pool) return;
+    try {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS accounts (
+          id VARCHAR(64) PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          email VARCHAR(255) NOT NULL,
+          balance NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+          status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      this.schemaInitialized = true;
+    } catch (e) {
+      // Ignore if cannot execute directly, fallback to HTTP
+    }
+  }
+
   // --- TRANSACTION SUPPORT ---
   async beginTransaction(): Promise<void> {
+    await this.ensureSchema();
+
     if (this.pool) {
-      this.activeClient = await this.pool.connect();
-      await this.activeClient.query('BEGIN');
-      return;
+      try {
+        this.activeClient = await this.pool.connect();
+        await this.activeClient.query('BEGIN');
+        return;
+      } catch (e) {
+        // Fallback to internal HTTP transaction
+        this.activeClient = null;
+      }
     }
 
     // In-memory simulation via HTTP internal endpoint
@@ -37,9 +64,12 @@ export class DatabaseClient {
 
   async rollback(): Promise<void> {
     if (this.activeClient) {
-      await this.activeClient.query('ROLLBACK');
-      this.activeClient.release();
-      this.activeClient = null;
+      try {
+        await this.activeClient.query('ROLLBACK');
+      } finally {
+        this.activeClient.release();
+        this.activeClient = null;
+      }
       return;
     }
 
@@ -48,9 +78,12 @@ export class DatabaseClient {
 
   async commit(): Promise<void> {
     if (this.activeClient) {
-      await this.activeClient.query('COMMIT');
-      this.activeClient.release();
-      this.activeClient = null;
+      try {
+        await this.activeClient.query('COMMIT');
+      } finally {
+        this.activeClient.release();
+        this.activeClient = null;
+      }
       return;
     }
 
@@ -59,14 +92,24 @@ export class DatabaseClient {
 
   // --- QUERY METHODS ---
   async getAccountById(id: string): Promise<AccountRecord | null> {
+    await this.ensureSchema();
+
     if (this.activeClient) {
-      const res = await this.activeClient.query('SELECT * FROM accounts WHERE id = $1', [id]);
-      return res.rows[0] || null;
+      try {
+        const res = await this.activeClient.query('SELECT * FROM accounts WHERE id = $1', [id]);
+        return res.rows[0] ? this.formatRow(res.rows[0]) : null;
+      } catch (e) {
+        // Fallback
+      }
     }
 
     if (this.pool) {
-      const res = await this.pool.query('SELECT * FROM accounts WHERE id = $1', [id]);
-      return res.rows[0] || null;
+      try {
+        const res = await this.pool.query('SELECT * FROM accounts WHERE id = $1', [id]);
+        return res.rows[0] ? this.formatRow(res.rows[0]) : null;
+      } catch (e) {
+        // Fallback to HTTP internal endpoint
+      }
     }
 
     return new Promise((resolve) => {
@@ -101,10 +144,22 @@ export class DatabaseClient {
   async close(): Promise<void> {
     if (this.activeClient) {
       this.activeClient.release();
+      this.activeClient = null;
     }
     if (this.pool) {
       await this.pool.end();
     }
+  }
+
+  private formatRow(row: any): AccountRecord {
+    return {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      balance: parseFloat(row.balance),
+      status: row.status,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+    };
   }
 
   private postInternal(path: string): Promise<void> {

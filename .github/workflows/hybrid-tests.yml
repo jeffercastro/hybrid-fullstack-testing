@@ -24,9 +24,9 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
 
     steps:
       - name: Checkout Code
@@ -43,6 +43,13 @@ jobs:
 
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps chromium
+
+      - name: Initialize PostgreSQL Schema
+        env:
+          PGPASSWORD: sdet_password
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          psql -h localhost -U sdet_user -d sdet_test_db -f src/db/migrations/init.sql
 
       - name: Run Hybrid Test Suite
         env:
