@@ -1,15 +1,17 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import http from 'http';
 import { AccountRecord } from '../../app/server';
 
 /**
  * DatabaseClient:
  * Represents the Direct Database Layer for an SDET.
- * In CI/Docker: Connects via PostgreSQL driver `pg` to execute raw SQL queries.
- * In local/standalone: Queries the database service directly to cross process boundaries.
+ * Supports:
+ * - Direct SQL queries
+ * - Full Transaction Management (BEGIN, ROLLBACK, COMMIT) for zero-teardown state resets.
  */
 export class DatabaseClient {
   private pool: Pool | null = null;
+  private activeClient: PoolClient | null = null;
   private baseUrl: string;
 
   constructor(baseUrl: string = 'http://localhost:3000') {
@@ -21,7 +23,47 @@ export class DatabaseClient {
     }
   }
 
+  // --- TRANSACTION SUPPORT ---
+  async beginTransaction(): Promise<void> {
+    if (this.pool) {
+      this.activeClient = await this.pool.connect();
+      await this.activeClient.query('BEGIN');
+      return;
+    }
+
+    // In-memory simulation via HTTP internal endpoint
+    await this.postInternal('/internal/db/transaction/begin');
+  }
+
+  async rollback(): Promise<void> {
+    if (this.activeClient) {
+      await this.activeClient.query('ROLLBACK');
+      this.activeClient.release();
+      this.activeClient = null;
+      return;
+    }
+
+    await this.postInternal('/internal/db/transaction/rollback');
+  }
+
+  async commit(): Promise<void> {
+    if (this.activeClient) {
+      await this.activeClient.query('COMMIT');
+      this.activeClient.release();
+      this.activeClient = null;
+      return;
+    }
+
+    await this.postInternal('/internal/db/transaction/commit');
+  }
+
+  // --- QUERY METHODS ---
   async getAccountById(id: string): Promise<AccountRecord | null> {
+    if (this.activeClient) {
+      const res = await this.activeClient.query('SELECT * FROM accounts WHERE id = $1', [id]);
+      return res.rows[0] || null;
+    }
+
     if (this.pool) {
       const res = await this.pool.query('SELECT * FROM accounts WHERE id = $1', [id]);
       return res.rows[0] || null;
@@ -57,8 +99,22 @@ export class DatabaseClient {
   }
 
   async close(): Promise<void> {
+    if (this.activeClient) {
+      this.activeClient.release();
+    }
     if (this.pool) {
       await this.pool.end();
     }
+  }
+
+  private postInternal(path: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(`${this.baseUrl}${path}`, { method: 'POST' }, (res) => {
+        res.resume();
+        res.on('end', () => resolve());
+      });
+      req.on('error', reject);
+      req.end();
+    });
   }
 }

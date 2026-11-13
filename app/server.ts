@@ -12,6 +12,9 @@ export interface AccountRecord {
 // Data store representing database tables
 export const databaseStore: Map<string, AccountRecord> = new Map();
 
+// Transaction snapshot store for rollback simulation
+let snapshotStore: Map<string, AccountRecord> | null = null;
+
 export function createServer() {
   return http.createServer((req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -27,8 +30,35 @@ export function createServer() {
       return;
     }
 
+    // --- TRANSACTION MANAGEMENT ENDPOINTS ---
+    if (method === 'POST' && url.pathname === '/internal/db/transaction/begin') {
+      snapshotStore = new Map(JSON.parse(JSON.stringify(Array.from(databaseStore.entries()))));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'TRANSACTION_STARTED' }));
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/internal/db/transaction/rollback') {
+      if (snapshotStore) {
+        databaseStore.clear();
+        for (const [key, value] of snapshotStore.entries()) {
+          databaseStore.set(key, value);
+        }
+        snapshotStore = null;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'TRANSACTION_ROLLED_BACK' }));
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/internal/db/transaction/commit') {
+      snapshotStore = null;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'TRANSACTION_COMMITTED' }));
+      return;
+    }
+
     // --- INTERNAL DB QUERY INTERFACE: GET /internal/db/accounts/:id ---
-    // Simulates direct DB access over the process boundary
     if (method === 'GET' && url.pathname.startsWith('/internal/db/accounts/')) {
       const id = url.pathname.replace('/internal/db/accounts/', '');
       const record = databaseStore.get(id);
@@ -119,7 +149,7 @@ export function createServer() {
       return;
     }
 
-    // --- UI: GET /dashboard/:id ---
+    // --- UI: GET /dashboard/:id (With Error Handling UI for Network Tests) ---
     if (method === 'GET' && url.pathname.startsWith('/dashboard/')) {
       const id = url.pathname.replace('/dashboard/', '');
       const record = databaseStore.get(id);
@@ -149,6 +179,8 @@ export function createServer() {
     .btn-activate:hover { background: #15803d; }
     .btn-deposit { background: #2563eb; color: white; }
     .btn-deposit:hover { background: #1d4ed8; }
+    .alert-error { display: none; background: #7f1d1d; border: 1px solid #ef4444; color: #fee2e2; padding: 12px; border-radius: 8px; margin-top: 16px; font-size: 14px; }
+    .loading-spinner { display: none; color: #38bdf8; font-size: 13px; margin-top: 12px; text-align: center; }
   </style>
 </head>
 <body>
@@ -165,30 +197,68 @@ export function createServer() {
       <button class="btn-suspend" id="btn-toggle-status" onclick="toggleStatus()">${record.status === 'ACTIVE' ? 'Suspend Account' : 'Activate Account'}</button>
       <button class="btn-deposit" id="btn-add-funds" onclick="addFunds()">Deposit $500</button>
     </div>
+
+    <div id="error-banner" class="alert-error" data-testid="error-banner"></div>
+    <div id="loading-indicator" class="loading-spinner">Processing transaction...</div>
     ` : `<p id="not-found-msg">Account record not found</p>`}
   </div>
 
   <script>
+    function showError(msg) {
+      const banner = document.getElementById('error-banner');
+      banner.innerText = msg;
+      banner.style.display = 'block';
+      document.getElementById('loading-indicator').style.display = 'none';
+    }
+
     async function toggleStatus() {
       const current = document.getElementById('account-status').innerText.trim();
       const nextStatus = current === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
-      await fetch('/api/accounts/${id}/status', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: nextStatus })
-      });
-      location.reload();
+      try {
+        const res = await fetch('/api/accounts/${id}/status', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: nextStatus })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Failed to update status' }));
+          showError(err.error || 'Network error updating account status');
+          return;
+        }
+        location.reload();
+      } catch (e) {
+        showError('Network Error: Unable to connect to server');
+      }
     }
 
     async function addFunds() {
+      document.getElementById('loading-indicator').style.display = 'block';
+      document.getElementById('error-banner').style.display = 'none';
+
       const rawBalance = document.getElementById('account-balance').innerText.replace('$', '');
       const newBalance = parseFloat(rawBalance) + 500;
-      await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: '${id}', name: document.getElementById('account-name').innerText, email: document.getElementById('account-email').innerText, balance: newBalance, status: document.getElementById('account-status').innerText.trim() })
-      });
-      location.reload();
+      try {
+        const res = await fetch('/api/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: '${id}',
+            name: document.getElementById('account-name').innerText,
+            email: document.getElementById('account-email').innerText,
+            balance: newBalance,
+            status: document.getElementById('account-status').innerText.trim()
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ error: 'Server error processing transaction' }));
+          showError(errData.error || 'Server error processing transaction');
+          return;
+        }
+        location.reload();
+      } catch (e) {
+        showError('Network connection lost during transaction');
+      }
     }
   </script>
 </body>

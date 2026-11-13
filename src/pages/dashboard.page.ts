@@ -3,6 +3,7 @@ import { Page, Locator } from '@playwright/test';
 /**
  * DashboardPage:
  * Page Object Model for the Account Management Dashboard UI.
+ * Covers user interactions, state assertions, and network failure states.
  */
 export class DashboardPage {
   readonly accountId: Locator;
@@ -12,6 +13,8 @@ export class DashboardPage {
   readonly accountStatus: Locator;
   readonly toggleStatusBtn: Locator;
   readonly addFundsBtn: Locator;
+  readonly errorBanner: Locator;
+  readonly loadingIndicator: Locator;
 
   constructor(private page: Page) {
     this.accountId = page.locator('#account-id');
@@ -21,6 +24,8 @@ export class DashboardPage {
     this.accountStatus = page.locator('#account-status');
     this.toggleStatusBtn = page.locator('#btn-toggle-status');
     this.addFundsBtn = page.locator('#btn-add-funds');
+    this.errorBanner = page.locator('#error-banner');
+    this.loadingIndicator = page.locator('#loading-indicator');
   }
 
   async goto(id: string): Promise<void> {
@@ -38,12 +43,16 @@ export class DashboardPage {
 
   async clickToggleStatus(): Promise<void> {
     await this.toggleStatusBtn.click();
-    // Wait for the reload/state update
     await this.page.waitForLoadState('networkidle');
   }
 
   async clickAddFunds(): Promise<void> {
     await this.addFundsBtn.click();
     await this.page.waitForLoadState('networkidle');
+  }
+
+  async getErrorMessage(): Promise<string> {
+    await this.errorBanner.waitFor({ state: 'visible' });
+    return (await this.errorBanner.innerText()).trim();
   }
 }
